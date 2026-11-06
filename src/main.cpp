@@ -20,18 +20,10 @@
 using namespace geode::prelude;
 
 // ---- settings --------------------------------------------------------
-static constexpr char const* STAGE_NAMES[] = {"2 ticks", "4 ticks", "8 ticks", "16 ticks", "Off"};
-static constexpr int STAGES[] = {2, 4, 8, 16, 0};
-static constexpr int STAGE_COUNT = 5;
-static int g_stage = 1;
-
-static constexpr int WAVE_MAX_TICKS = 8;
-
-// After a spawn, wave Grid / Min Gap are skipped for this many ticks.
+// Now using numbers for styles: 1 = Min Hold, 2 = Min Gap, 3 = Grid
+static constexpr int WAVE_MAX_TICKS = 16;
 static constexpr int SPAWN_GRACE_TICKS = 16;
 
-// Index: 0 cube, 1 ball, 2 robot, 3 spider, 4 ship, 5 ufo, 6 swing, 7 wave.
-// Value: -1 = same as main window, 0 = off, >0 = custom ticks.
 static constexpr int MODE_COUNT = 8;
 static constexpr int MODE_WAVE = 7;
 static constexpr char const* MODE_KEYS[] = {
@@ -40,18 +32,13 @@ static constexpr char const* MODE_KEYS[] = {
 };
 static int g_modeTicks[MODE_COUNT] = {-1, -1, -1, -1, -1, -1, -1, -1};
 
-static constexpr char const* WAVE_NAMES[] = {"Min Hold", "Min Gap", "Grid"};
-enum WaveMode { WAVE_HOLD = 0, WAVE_GAP = 1, WAVE_GRID = 2 };
-static constexpr int WAVE_MODE_COUNT = 3;
+// 1 = Min Hold, 2 = Min Gap, 3 = Grid
+enum WaveMode { WAVE_HOLD = 1, WAVE_GAP = 2, WAVE_GRID = 3 };
 static int g_waveMode = WAVE_GRID;
-
-// Experimental: the same three timing styles for ship, UFO and swing.
-// Index: 0 ship, 1 ufo, 2 swing. Default is Min Hold (the old behavior).
 static constexpr char const* FLY_STYLE_KEYS[] = {"ship-style", "ufo-style", "swing-style"};
 static int g_flyStyle[3] = {WAVE_HOLD, WAVE_HOLD, WAVE_HOLD};
 
-// The game speed is typed in as a number. These common speeds are only used
-// by the TPS Up / TPS Down hotkeys.
+static int g_stage = 4; // Default is 4 ticks
 static constexpr int TPS_PRESETS[] = {60, 120, 240, 360, 480, 720, 960, 1000};
 static constexpr int TPS_COUNT = 8;
 static constexpr int TPS_MIN = 1;
@@ -59,49 +46,37 @@ static constexpr int TPS_MAX = 10000;
 static int g_tps = 240;
 
 static bool g_debug = false;
-
-// Experimental: buffering during dual-portal sections of one-player levels.
-// Off by default. Real 2-player levels are not affected by this.
 static bool g_dualEnabled = false;
 
-// Hotkeys are keybind settings. Order: 0 stage, 1 tps up, 2 tps down, 3 debug, 4 wave mode, 5 add section.
 static constexpr int KEYBIND_COUNT = 6;
 static constexpr char const* KEYBIND_SETTINGS[] = {"kb-stage", "kb-tps-up", "kb-tps-down", "kb-debug", "kb-wave", "kb-section"};
 
-// Raised whenever the level resets (death, restart, checkpoint).
 static int g_resetEpoch = 0;
 // ----------------------------------------------------------------------
 
 #define DBG(...) do { if (g_debug) log::info(__VA_ARGS__); } while (0)
 
-static int indexOf(char const* const* names, int n, std::string const& v, int def) {
-    for (int i = 0; i < n; i++) if (v == names[i]) return i;
-    return def;
-}
-
 static void loadSettings() {
     auto m = Mod::get();
-    g_stage = indexOf(STAGE_NAMES, STAGE_COUNT, m->getSettingValue<std::string>("stage"), 1);
+    g_stage = static_cast<int>(m->getSettingValue<int64_t>("stage"));
     g_tps = std::clamp(static_cast<int>(m->getSettingValue<int64_t>("tps-value")), TPS_MIN, TPS_MAX);
-    g_waveMode = indexOf(WAVE_NAMES, WAVE_MODE_COUNT, m->getSettingValue<std::string>("wave-mode"), WAVE_GRID);
+    g_waveMode = static_cast<int>(m->getSettingValue<int64_t>("wave-mode"));
     for (int i = 0; i < MODE_COUNT; i++) {
         g_modeTicks[i] = static_cast<int>(m->getSettingValue<int64_t>(MODE_KEYS[i]));
     }
     for (int i = 0; i < 3; i++) {
-        g_flyStyle[i] = indexOf(WAVE_NAMES, WAVE_MODE_COUNT, m->getSettingValue<std::string>(FLY_STYLE_KEYS[i]), WAVE_HOLD);
+        g_flyStyle[i] = static_cast<int>(m->getSettingValue<int64_t>(FLY_STYLE_KEYS[i]));
     }
     g_debug = m->getSettingValue<bool>("debug");
     g_dualEnabled = m->getSettingValue<bool>("dual-mode");
 }
-
-static char const* waveModeName() { return WAVE_NAMES[g_waveMode]; }
 
 static float stepsPerTick() {
     return g_tps / 240.0f;
 }
 
 static int mainLimitSteps() {
-    return static_cast<int>(std::lround(STAGES[g_stage] * stepsPerTick()));
+    return static_cast<int>(std::lround(g_stage * stepsPerTick()));
 }
 
 static bool isFlyMode(PlayerObject* p) {
@@ -123,7 +98,6 @@ static int modeIndex(PlayerObject* p) {
     return 0;
 }
 
-// Timing style of the icon's current mode (Min Hold, Min Gap or Grid).
 static int styleFor(PlayerObject* p) {
     int idx = modeIndex(p);
     if (idx == MODE_WAVE) return g_waveMode;
@@ -134,7 +108,7 @@ static int styleFor(PlayerObject* p) {
 static int ticksForMode(int idx) {
     int c = g_modeTicks[idx];
     if (c < 0) {
-        int t = STAGES[g_stage];
+        int t = g_stage;
         if (idx == MODE_WAVE && t > 0) t = std::min(t, WAVE_MAX_TICKS);
         return t;
     }
@@ -172,8 +146,6 @@ static char const* modeName(PlayerObject* p) {
     return "cube";
 }
 
-// Next common speed above / below the current one. A typed value between two
-// presets moves to the neighbor in the direction pressed; at the ends it stays.
 static int stepTps(int cur, bool up) {
     if (up) {
         for (int i = 0; i < TPS_COUNT; i++) {
@@ -192,31 +164,26 @@ static void addSectionHere();
 static void doHotkey(int action) {
     auto m = Mod::get();
     switch (action) {
-        case 0:
-            g_stage = (g_stage + 1) % STAGE_COUNT;
-            m->setSettingValue<std::string>("stage", STAGE_NAMES[g_stage]);
-            log::info("[InputBuffer] Main window -> {} ({} steps, wave {} steps @ {} TPS)",
-                      STAGE_NAMES[g_stage], mainLimitSteps(), waveGridSteps(), g_tps);
+        case 0: {
+            g_stage = (g_stage + 1) % 17;
+            m->setSettingValue<int64_t>("stage", static_cast<int64_t>(g_stage));
             break;
+        }
         case 1:
             g_tps = stepTps(g_tps, true);
             m->setSettingValue<int64_t>("tps-value", static_cast<int64_t>(g_tps));
-            log::info("[InputBuffer] TPS -> {} ({:.2f} steps/tick)", g_tps, stepsPerTick());
             break;
         case 2:
             g_tps = stepTps(g_tps, false);
             m->setSettingValue<int64_t>("tps-value", static_cast<int64_t>(g_tps));
-            log::info("[InputBuffer] TPS -> {} ({:.2f} steps/tick)", g_tps, stepsPerTick());
             break;
         case 3:
             g_debug = !g_debug;
             m->setSettingValue<bool>("debug", g_debug);
-            log::info("[InputBuffer] Debug logging -> {}", g_debug ? "ON" : "OFF");
             break;
         case 4:
-            g_waveMode = (g_waveMode + 1) % WAVE_MODE_COUNT;
-            m->setSettingValue<std::string>("wave-mode", WAVE_NAMES[g_waveMode]);
-            log::info("[InputBuffer] Wave mode -> {} ({} steps)", waveModeName(), waveGridSteps());
+            g_waveMode = (g_waveMode % 3) + 1; // Cycles 1, 2, 3
+            m->setSettingValue<int64_t>("wave-mode", static_cast<int64_t>(g_waveMode));
             break;
         case 5:
             addSectionHere();
@@ -226,20 +193,18 @@ static void doHotkey(int action) {
 
 static void hotkeyPressed(int action, bool down, bool repeat) {
     if (!down || repeat) return;
-    if (!PlayLayer::get()) return; // hotkeys only act inside a level
+    if (!PlayLayer::get()) return;
     doHotkey(action);
 }
 
 // ---- profiles --------------------------------------------------------
-// A profile is a named copy of the timing settings (not hotkeys or debug).
-// It is stored as one line of text: key=value|key=value|...
-struct ProfileKey { char const* key; char type; }; // s = string, i = int, b = bool
+struct ProfileKey { char const* key; char type; };
 static constexpr ProfileKey PROFILE_KEYS[] = {
-    {"stage", 's'}, {"wave-mode", 's'}, {"tps-value", 'i'},
+    {"stage", 'i'}, {"wave-mode", 'i'}, {"tps-value", 'i'},
     {"cube-ticks", 'i'}, {"ball-ticks", 'i'}, {"robot-ticks", 'i'}, {"spider-ticks", 'i'},
     {"ship-ticks", 'i'}, {"ufo-ticks", 'i'}, {"swing-ticks", 'i'}, {"wave-ticks", 'i'},
     {"dual-mode", 'b'},
-    {"ship-style", 's'}, {"ufo-style", 's'}, {"swing-style", 's'},
+    {"ship-style", 'i'}, {"ufo-style", 'i'}, {"swing-style", 'i'},
 };
 
 static std::string serializeProfile() {
@@ -249,8 +214,7 @@ static std::string serializeProfile() {
         if (!out.empty()) out += '|';
         out += k.key;
         out += '=';
-        if (k.type == 's') out += m->getSettingValue<std::string>(k.key);
-        else if (k.type == 'i') out += std::to_string(m->getSettingValue<int64_t>(k.key));
+        if (k.type == 'i') out += std::to_string(m->getSettingValue<int64_t>(k.key));
         else out += m->getSettingValue<bool>(k.key) ? "1" : "0";
     }
     return out;
@@ -270,8 +234,7 @@ static void applyProfileData(std::string const& data) {
         std::string val = item.substr(eq + 1);
         for (auto const& k : PROFILE_KEYS) {
             if (key != k.key) continue;
-            if (k.type == 's') m->setSettingValue<std::string>(k.key, val);
-            else if (k.type == 'i') m->setSettingValue<int64_t>(k.key, static_cast<int64_t>(std::strtoll(val.c_str(), nullptr, 10)));
+            if (k.type == 'i') m->setSettingValue<int64_t>(k.key, static_cast<int64_t>(std::strtoll(val.c_str(), nullptr, 10)));
             else m->setSettingValue<bool>(k.key, val == "1");
             break;
         }
@@ -310,18 +273,13 @@ static bool applyProfileByName(std::string const& name) {
     return true;
 }
 
-// When a level applies its own profile, the player's settings from before are
-// saved first and put back when the level is left. The copy is kept on disk,
-// so it is also restored the next time the game starts if the game crashed.
 static void restoreAfterLevel() {
     std::string snap = Mod::get()->getSavedValue<std::string>("restore-snapshot", "");
     if (snap.empty()) return;
     Mod::get()->setSavedValue<std::string>("restore-snapshot", "");
     applyProfileData(snap);
-    log::info("[InputBuffer] Restored your settings from before the level profile");
 }
 
-// Which profile a level should use (level id -> profile name).
 static std::vector<std::pair<int, std::string>> loadLevelProfiles() {
     std::vector<std::pair<int, std::string>> out;
     std::string raw = Mod::get()->getSavedValue<std::string>("level-profiles", "");
@@ -369,9 +327,6 @@ static void forgetProfileEverywhere(std::string const& name) {
     saveLevelProfiles(v);
 }
 
-// A key that identifies a level. Uploaded levels use their real ID. Levels
-// that were never uploaded (such as copies you made to edit) have ID 0, so
-// they get a negative key made from their name instead.
 static int levelKeyFor(GJGameLevel* level) {
     if (!level) return 0;
     int id = level->m_levelID.value();
@@ -388,21 +343,16 @@ static int currentLevelID() {
     return levelKeyFor(pl->m_level);
 }
 
-
 // ---- sections (experimental) -------------------------------------------
-// A level can be split into sections by percent. Each section has its own
-// start and end (two decimals) and its own copy of the settings. Parts of the
-// level that no section covers follow the "empty sections" choice. If sections
-// overlap, the one that starts last wins.
 struct Section { float start; float end; std::string data; };
 struct LevelSections {
-    int emptyMode = 0; // 0 level's blanket profile, 1 normal settings, 2 buffer off
+    int emptyMode = 0;
     std::vector<Section> secs;
 };
 static constexpr char const* EMPTY_MODE_NAMES[] = {"Blanket profile", "My normal settings", "Buffer off"};
 static constexpr int EMPTY_MODE_COUNT = 3;
 static constexpr char const* OFF_PROFILE =
-    "stage=Off|cube-ticks=0|ball-ticks=0|robot-ticks=0|spider-ticks=0|ship-ticks=0|ufo-ticks=0|swing-ticks=0|wave-ticks=0";
+    "stage=0|cube-ticks=0|ball-ticks=0|robot-ticks=0|spider-ticks=0|ship-ticks=0|ufo-ticks=0|swing-ticks=0|wave-ticks=0";
 
 static std::vector<std::string> splitStr(std::string const& s, char sep) {
     std::vector<std::string> out;
@@ -430,7 +380,6 @@ static void sortSections(LevelSections& ls) {
     std::stable_sort(ls.secs.begin(), ls.secs.end(), [](Section const& a, Section const& b) { return a.start < b.start; });
 }
 
-// Read / change one key inside a profile string (key=value|key=value|...).
 static std::string profGet(std::string const& data, std::string const& key, std::string const& def = "") {
     for (auto const& item : splitStr(data, '|')) {
         size_t eq = item.find('=');
@@ -457,7 +406,6 @@ static std::string profSet(std::string const& data, std::string const& key, std:
     return out;
 }
 
-// Saved as one line per level: id <tab> emptyMode <tab> start,end,data;start,end,data
 static LevelSections loadLevelSections(int id) {
     LevelSections ls;
     std::string raw = Mod::get()->getSavedValue<std::string>("level-sections", "");
@@ -499,10 +447,9 @@ static void saveLevelSections(int id, LevelSections const& ls) {
     Mod::get()->setSavedValue<std::string>("level-sections", out);
 }
 
-// Runtime state for the level being played.
 static bool g_secActive = false;
-static LevelSections g_sec;      // sorted copy
-static std::string g_secToken;   // what is currently applied
+static LevelSections g_sec;
+static std::string g_secToken;
 static float g_lastDeathPct = -1.f;
 
 static std::string snapshotData() {
@@ -519,7 +466,6 @@ static std::string emptyToken() {
     return g_sec.emptyMode == 1 ? "N" : (g_sec.emptyMode == 2 ? "O" : "B");
 }
 
-// Which section covers this percent. The one that starts last wins.
 static std::string sectionToken(float pct) {
     int idx = -1;
     for (size_t i = 0; i < g_sec.secs.size(); i++) {
@@ -546,7 +492,6 @@ static void applyToken(std::string const& tok, int levelID) {
     if (!snap.empty()) applyProfileData(snap);
 }
 
-// Call after the sections of the current level were edited.
 static void reloadSectionsRuntime() {
     int id = currentLevelID();
     if (id == 0) return;
@@ -561,8 +506,6 @@ static void reloadSectionsRuntime() {
     else if (wasActive) applyToken("B", id);
 }
 
-// A new section starts at `start`, ends where the next one starts (or at the
-// end of the level), and begins as a copy of the current settings.
 static Section newSection(LevelSections const& ls, float start) {
     float end = 100.f;
     for (auto const& s : ls.secs) {
@@ -588,7 +531,6 @@ static void addSectionHere() {
     Notification::create(msg.c_str(), NotificationIcon::Success, 1.5f)->show();
 }
 
-// Small window that asks where a new section should start.
 class AddSectionPopup : public geode::Popup {
 protected:
     std::function<void(float)> m_pick;
@@ -672,14 +614,12 @@ public:
     }
 };
 
-// The window where sections are edited. Every section keeps its own copy of
-// the settings, which can be changed here without leaving the window.
 class SectionsPopup : public geode::Popup {
 protected:
     int m_levelID = 0;
     LevelSections m_ls;
     int m_idx = 0;
-    int m_page = 0; // 0 window, 1 modes, 2 styles, 3 more
+    int m_page = 0;
     bool m_updating = false;
     std::vector<std::string> m_names;
     int m_copySel = 0;
@@ -771,14 +711,12 @@ protected:
         button("Delete", 165.f, 106.f, menu_selector(SectionsPopup::onDelete), 0.5f);
         m_status = text("", 0.f, 32.f, 0.27f);
 
-
         this->refresh();
         this->defaultStatus();
         this->buildPage();
         return true;
     }
 
-    // Saves the edits and updates the running level.
     void commit() {
         saveLevelSections(m_levelID, m_ls);
         reloadSectionsRuntime();
@@ -789,7 +727,6 @@ protected:
         return &m_ls.secs[m_idx];
     }
 
-    // Name and short label for the cycling rows (tag = row * 2 + direction).
     void cycleRow(char const* label, int row, std::string const& value, float y) {
         text(label, -190.f, y, 0.4f, true, true);
         arrow(false, -10.f, y, menu_selector(SectionsPopup::onCycle), row * 2, true);
@@ -814,7 +751,6 @@ protected:
         });
     }
 
-    // Rebuilds the settings area for the current section and page.
     void buildPage() {
         m_updating = true;
         for (auto n : m_pageNodes) n->removeFromParent();
@@ -835,7 +771,7 @@ protected:
         }
         std::string const& d = sec->data;
         if (m_page == 0) {
-            cycleRow("Main window", 0, profGet(d, "stage", "4 ticks"), 8.f);
+            cycleRow("Main window", 0, profGet(d, "stage", "4"), 8.f);
             tickInput("Game speed (TPS)", "tps-value", -190.f, 70.f, -24.f, profGet(d, "tps-value", "240"), true);
             cycleRow("Dual mode", 5, profGet(d, "dual-mode", "0") == "1" ? "On" : "Off", -56.f);
         } else if (m_page == 1) {
@@ -846,10 +782,10 @@ protected:
                 tickInput(NAMES[i], MODE_KEYS[i], col ? 10.f : -190.f, col ? 100.f : -100.f, y, profGet(d, MODE_KEYS[i], "-1"), false);
             }
         } else {
-            cycleRow("Wave", 1, profGet(d, "wave-mode", "Grid"), 8.f);
-            cycleRow("Ship", 2, profGet(d, "ship-style", "Min Hold"), -24.f);
-            cycleRow("UFO", 3, profGet(d, "ufo-style", "Min Hold"), -56.f);
-            cycleRow("Swing", 4, profGet(d, "swing-style", "Min Hold"), -88.f);
+            cycleRow("Wave", 1, profGet(d, "wave-mode", "3"), 8.f);
+            cycleRow("Ship", 2, profGet(d, "ship-style", "1"), -24.f);
+            cycleRow("UFO", 3, profGet(d, "ufo-style", "1"), -56.f);
+            cycleRow("Swing", 4, profGet(d, "swing-style", "1"), -88.f);
         }
         m_updating = false;
     }
@@ -865,8 +801,6 @@ protected:
         }
     }
 
-    // The "More" page: copy a saved profile in, choose what empty parts use,
-    // and copy the sections to another level.
     void buildMore() {
         text("Copy settings from a saved profile", -190.f, 12.f, 0.33f, true, true);
         arrow(false, -60.f, -12.f, menu_selector(SectionsPopup::onNamePrev), 0, true);
@@ -956,7 +890,6 @@ public:
     void onPageMore(CCObject*) { m_page = 3; defaultStatus(); buildPage(); }
     void onPageStyles(CCObject*) { m_page = 2; defaultStatus(); buildPage(); }
 
-    // Arrow on a cycling row. Tag = row * 2 + (1 for next, 0 for previous).
     void onCycle(CCObject* sender) {
         auto sec = current();
         if (!sec) return;
@@ -965,14 +898,16 @@ public:
         int dir = (tag % 2) ? 1 : -1;
         std::string& d = sec->data;
         if (row == 0) {
-            int cur = indexOf(STAGE_NAMES, STAGE_COUNT, profGet(d, "stage", "4 ticks"), 1);
-            d = profSet(d, "stage", STAGE_NAMES[(cur + dir + STAGE_COUNT) % STAGE_COUNT]);
+            int cur = std::atoi(profGet(d, "stage", "4").c_str());
+            cur = std::clamp(cur + dir, 0, 16);
+            d = profSet(d, "stage", std::to_string(cur));
         } else if (row == 5) {
             d = profSet(d, "dual-mode", profGet(d, "dual-mode", "0") == "1" ? "0" : "1");
         } else {
             std::string key = row == 1 ? "wave-mode" : FLY_STYLE_KEYS[row - 2];
-            int cur = indexOf(WAVE_NAMES, WAVE_MODE_COUNT, profGet(d, key, row == 1 ? "Grid" : "Min Hold"), 0);
-            d = profSet(d, key, WAVE_NAMES[(cur + dir + WAVE_MODE_COUNT) % WAVE_MODE_COUNT]);
+            int cur = std::atoi(profGet(d, key, row == 1 ? "3" : "1").c_str());
+            cur = std::clamp(cur + dir, 1, 3);
+            d = profSet(d, key, std::to_string(cur));
         }
         commit();
         buildPage();
@@ -992,7 +927,6 @@ public:
         refresh();
     }
 
-    // Copies a saved profile's settings into the current section.
     void onLoadProfile(CCObject*) {
         auto sec = current();
         if (!sec) { m_status->setString("Add a section first."); return; }
@@ -1010,7 +944,6 @@ public:
         m_status->setString(("Loaded '" + name + "'.").c_str());
     }
 
-    // Add asks where the new section should start.
     void onAdd(CCObject*) {
         if (m_levelID == 0) { m_status->setString("Open this from inside a level."); return; }
         auto popup = AddSectionPopup::create([this](float pct) { this->addAt(pct); });
@@ -1048,7 +981,6 @@ public:
         refresh();
     }
 
-    // Copies these sections (and the level's linked profile) to another level.
     void onCopy(CCObject*) {
         int target = std::atoi(m_copyInput->getString().c_str());
         if (target <= 0) { m_status->setString("Type the level ID to copy to."); return; }
@@ -1062,14 +994,12 @@ public:
     }
 
     void onClose(CCObject* sender) {
-        // Sections only take their final order once the window is closed.
         sortSections(m_ls);
         commit();
         Popup::onClose(sender);
     }
 };
 
-// Opens the Sections window. If sections are switched off, a message says so.
 static void openSectionsWindow(int levelID) {
     if (auto p = SectionsPopup::create(levelID)) p->show();
     if (!Mod::get()->getSettingValue<bool>("sections")) {
@@ -1221,7 +1151,6 @@ public:
 
     void onSave(CCObject*) {
         std::string name = m_nameInput->getString();
-        // trim spaces on both ends
         size_t a = name.find_first_not_of(' ');
         size_t b = name.find_last_not_of(' ');
         name = a == std::string::npos ? std::string() : name.substr(a, b - a + 1);
@@ -1262,36 +1191,7 @@ public:
     }
 };
 
-
-// ---- main popup: Basic and Advanced tabs --------------------------------
-static constexpr int PRESET_COUNT = 5;
-static constexpr char const* PRESET_NAMES[PRESET_COUNT] = {"Off", "Strict", "Standard", "Relaxed", "Very relaxed"};
-static constexpr char const* PRESET_STAGE[PRESET_COUNT] = {"Off", "2 ticks", "4 ticks", "8 ticks", "16 ticks"};
-static constexpr char const* PRESET_INFO[PRESET_COUNT] = {
-    "No buffering or timing help.",
-    "Remembers a click about half a frame early.",
-    "Remembers a click about 1 frame early. A good start.",
-    "Remembers a click about 2 frames early.",
-    "Remembers a click about 4 frames early. Very forgiving."
-};
-static constexpr char const* DEFAULT_PROFILE =
-    "stage=4 ticks|wave-mode=Grid|tps-value=240|cube-ticks=-1|ball-ticks=-1|robot-ticks=-1|spider-ticks=-1|"
-    "ship-ticks=-1|ufo-ticks=-1|swing-ticks=-1|wave-ticks=-1|dual-mode=0|"
-    "ship-style=Min Hold|ufo-style=Min Hold|swing-style=Min Hold";
-
-// Which quick setup matches the current settings, or -1 for custom.
-static int currentPreset() {
-    auto m = Mod::get();
-    for (auto key : MODE_KEYS) {
-        if (m->getSettingValue<int64_t>(key) != -1) return -1;
-    }
-    std::string stage = m->getSettingValue<std::string>("stage");
-    for (int i = 0; i < PRESET_COUNT; i++) {
-        if (stage == PRESET_STAGE[i]) return i;
-    }
-    return -1;
-}
-
+// ---- main popup ---------------------------------------------------------
 class BufferPopup : public geode::Popup {
 protected:
     bool m_advanced = false;
@@ -1349,7 +1249,6 @@ protected:
         m_tabNodes.push_back(btn);
     }
 
-    // Rebuilds the content of the current tab.
     void build() {
         for (auto n : m_tabNodes) n->removeFromParent();
         m_tabNodes.clear();
@@ -1402,7 +1301,7 @@ protected:
             m_presetInfo->setString(p >= 0 ? PRESET_INFO[p] : "You changed the settings by hand.");
         }
         if (m_waveLabel) {
-            std::string a = std::string("Wave style: ") + waveModeName();
+            std::string a = "Wave style: " + std::to_string(g_waveMode);
             m_waveLabel->setString(a.c_str());
             std::string b = std::string("Dual mode (experimental): ") + (g_dualEnabled ? "On" : "Off");
             m_dualLabel->setString(b.c_str());
@@ -1425,10 +1324,9 @@ public:
     void onTabBasic(CCObject*) { m_advanced = false; build(); }
     void onTabAdvanced(CCObject*) { m_advanced = true; build(); }
 
-    // Picking a quick setup resets the per-mode windows to follow it.
     void setPreset(int p) {
         auto m = Mod::get();
-        m->setSettingValue<std::string>("stage", PRESET_STAGE[p]);
+        m->setSettingValue<int64_t>("stage", p == 0 ? 0 : p * 4); // 0=0, 1=4, 2=8, 3=12, 4=16
         for (auto key : MODE_KEYS) m->setSettingValue<int64_t>(key, -1);
         refresh();
     }
@@ -1444,8 +1342,8 @@ public:
     }
 
     void onWaveStyle(CCObject*) {
-        int next = (g_waveMode + 1) % WAVE_MODE_COUNT;
-        Mod::get()->setSettingValue<std::string>("wave-mode", WAVE_NAMES[next]);
+        int next = (g_waveMode % 3) + 1;
+        Mod::get()->setSettingValue<int64_t>("wave-mode", static_cast<int64_t>(next));
         refresh();
     }
 
@@ -1474,21 +1372,18 @@ public:
 
 $on_mod(Loaded) {
     loadSettings();
-    restoreAfterLevel(); // undo a level profile left over from a crash
-    listenForSettingChanges<std::string>("stage", [](std::string) { loadSettings(); });
+    restoreAfterLevel();
+    listenForSettingChanges<int64_t>("stage", [](int64_t) { loadSettings(); });
     listenForSettingChanges<int64_t>("tps-value", [](int64_t) { loadSettings(); });
-    listenForSettingChanges<std::string>("wave-mode", [](std::string) { loadSettings(); });
+    listenForSettingChanges<int64_t>("wave-mode", [](int64_t) { loadSettings(); });
     for (auto key : MODE_KEYS) {
         listenForSettingChanges<int64_t>(key, [](int64_t) { loadSettings(); });
     }
     listenForSettingChanges<bool>("debug", [](bool) { loadSettings(); });
     listenForSettingChanges<bool>("dual-mode", [](bool) { loadSettings(); });
     for (auto key : FLY_STYLE_KEYS) {
-        listenForSettingChanges<std::string>(key, [](std::string) { loadSettings(); });
+        listenForSettingChanges<int64_t>(key, [](int64_t) { loadSettings(); });
     }
-
-    log::info("[InputBuffer] BufferMod loaded (v22: profiles + keybinds). Main: {}, TPS: {}, wave: {}, dual: {}",
-              STAGE_NAMES[g_stage], g_tps, waveModeName(), g_dualEnabled ? "ON" : "OFF");
 }
 
 $on_game(Loaded) {
@@ -1502,20 +1397,16 @@ $on_game(Loaded) {
 class $modify(BufferPause, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
-
         auto menu = CCMenu::create();
-
         auto spr = ButtonSprite::create("Buffer");
         spr->setScale(0.7f);
         auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(BufferPause::onBufferSettings));
         menu->addChild(btn);
-
         auto spr2 = ButtonSprite::create("Profiles");
         spr2->setScale(0.7f);
         auto btn2 = CCMenuItemSpriteExtra::create(spr2, this, menu_selector(BufferPause::onBufferProfiles));
         btn2->setPosition({0.f, 30.f});
         menu->addChild(btn2);
-
         auto win = CCDirector::get()->getWinSize();
         menu->setPosition({win.width - 60.f, 30.f});
         this->addChild(menu);
@@ -1530,8 +1421,6 @@ class $modify(BufferPause, PauseLayer) {
     }
 };
 
-// Raises the reset flag on death, restart and checkpoint loads. The buffer
-// layer clears its state on the next step.
 class $modify(BufferReset, PlayLayer) {
     void resetLevel() {
         PlayLayer::resetLevel();
@@ -1554,7 +1443,6 @@ class $modify(BufferReset, PlayLayer) {
         g_lastDeathPct = this->getCurrentPercent();
     }
 
-    // Switches settings when the player moves into a different section.
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
         if (!g_secActive) return;
@@ -1563,11 +1451,9 @@ class $modify(BufferReset, PlayLayer) {
         if (tok == g_secToken) return;
         g_secToken = tok;
         applyToken(tok, levelKeyFor(m_level));
-        g_resetEpoch++; // start the new section with clean input state
-        DBG("[InputBuffer] Section -> {}", tok);
+        g_resetEpoch++;
     }
 
-    // Leaving the level puts the player's own settings back.
     void onExit() {
         PlayLayer::onExit();
         g_secActive = false;
@@ -1575,7 +1461,6 @@ class $modify(BufferReset, PlayLayer) {
         restoreAfterLevel();
     }
 
-    // Applies the profile linked to this level, if there is one.
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
         if (!m_level) return;
@@ -1587,7 +1472,6 @@ class $modify(BufferReset, PlayLayer) {
         LevelSections ls = loadLevelSections(id);
         bool useSections = Mod::get()->getSettingValue<bool>("sections") && !ls.secs.empty();
         if (name.empty() && !useSections) return;
-        // Remember the player's own settings so they can be restored on exit.
         ensureSnapshot();
         if (!name.empty() && applyProfileByName(name)) {
             log::info("[InputBuffer] Applied profile '{}' for level {}", name, id);
@@ -1609,11 +1493,9 @@ struct PState {
     int pendingStart = 0;
     int lastRingCount = 0;
     bool releaseNext = false;
-
     int pressStep = -1;
     bool delayedRelease = false;
     int releaseAt = 0;
-
     std::vector<std::pair<bool, int>> waveQueue;
     int lastReleaseStep = -1000000;
 };
@@ -1626,21 +1508,15 @@ class $modify(BufferLayer, GJBaseGameLayer) {
         PState ps[2];
     };
 
-    // True in a one-player level with a dual portal: a single click is sent
-    // as player 1 and the game applies it to both icons.
     bool sharedDualInput() {
         return m_gameState.m_isDualMode && m_levelSettings && !m_levelSettings->m_twoPlayerMode;
     }
 
-    // Press or release for one icon. In a dual section each icon has its own
-    // state and decides for itself, so nothing is mirrored here.
     void sendInput(PlayerObject* p, bool down) {
         if (down) p->pushButton(PlayerButton::Jump);
         else p->releaseButton(PlayerButton::Jump);
     }
 
-    // When experimental dual support is off, nothing may stay held back from
-    // an earlier section: deliver what is queued and drop pending rescues.
     void bypassCleanup() {
         auto f = m_fields.operator->();
         PlayerObject* players[2] = {m_player1, m_player2};
@@ -1662,7 +1538,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
         }
     }
 
-    // Clears our state after a death / restart / checkpoint load.
     void syncState() {
         auto f = m_fields.operator->();
         if (f->epoch == g_resetEpoch) return;
@@ -1675,19 +1550,12 @@ class $modify(BufferLayer, GJBaseGameLayer) {
             }
             s = PState();
         }
-
-        // Wave Grid / Min Gap are skipped briefly after a spawn so the first
-        // clicks go straight through.
         f->graceUntil = f->step + spawnGraceSteps();
 
-        // We may have held back a release the game never saw. Releasing a
-        // button that is not held is harmless, so make sure nothing is stuck.
         if (inconsistent) {
             if (m_player1) m_player1->releaseButton(PlayerButton::Jump);
             if (m_player2) m_player2->releaseButton(PlayerButton::Jump);
         }
-        DBG("[InputBuffer] state reset (death/restart), spawn grace until step {}{}",
-            f->graceUntil, inconsistent ? ", released stuck button" : "");
     }
 
     void flushWaveQueue(PlayerObject* p, PState& s, int idx) {
@@ -1699,19 +1567,14 @@ class $modify(BufferLayer, GJBaseGameLayer) {
 
     void stepPlayer(PlayerObject* p, PState& s, int idx) {
         int step = m_fields->step;
-        char const* tag = idx == 0 ? "P1" : "P2";
-
         if (!s.waveQueue.empty()) {
             if (!isFlyMode(p)) {
                 flushWaveQueue(p, s, idx);
             } else {
                 size_t applied = 0;
-                while (applied < s.waveQueue.size() &&
-                       step >= s.waveQueue[applied].second) {
+                while (applied < s.waveQueue.size() && step >= s.waveQueue[applied].second) {
                     auto ev = s.waveQueue[applied];
                     sendInput(p, ev.first);
-                    DBG("[InputBuffer] {} {} {} {} applied at step {}",
-                        tag, modeName(p), WAVE_NAMES[styleFor(p)], ev.first ? "PRESS" : "RELEASE", step);
                     applied++;
                 }
                 s.waveQueue.erase(s.waveQueue.begin(), s.waveQueue.begin() + applied);
@@ -1723,8 +1586,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
                 s.delayedRelease = false;
                 s.held = false;
                 sendInput(p, false);
-                DBG("[InputBuffer] {} MIN-HOLD release applied at step {} [{}]",
-                    tag, step, modeName(p));
             }
         }
 
@@ -1739,16 +1600,12 @@ class $modify(BufferLayer, GJBaseGameLayer) {
         int limit = modeLimitSteps(p);
 
         if (limit <= 0 || waited > limit || !isGroundMode(p)) {
-            DBG("[InputBuffer] {} pending EXPIRED waited={} limit={} mode={}",
-                tag, waited, limit, modeName(p));
             s.pending = false;
             return;
         }
 
         int rings = ringsTouching(p);
         if (rings != s.lastRingCount) {
-            DBG("[InputBuffer] {} ring overlap count {} -> {} (waited {})",
-                tag, s.lastRingCount, rings, waited);
             s.lastRingCount = rings;
         }
 
@@ -1761,22 +1618,16 @@ class $modify(BufferLayer, GJBaseGameLayer) {
             char const* what = onRing ? "RING" : "GROUND";
 
             if (s.held) {
-                DBG("[InputBuffer] {} reached {} after {} steps but button still held, skipping ({})",
-                    tag, what, waited, modeName(p));
+                // Button still held, skip
             } else {
                 sendInput(p, true);
                 s.releaseNext = true;
-                log::info("[InputBuffer] *** SAVED +{:.1f} TICKS ({:.2f} frames @ 60fps) PRESS! [{} {} {}] (Step0: {} -> Delayed: {}) [Limit: {} steps] ***",
-                          ticksSaved, ticksSaved / 4.0f, tag, modeName(p), what,
-                          s.pendingStart, step, limit);
             }
         }
     }
 
     bool inputPlayer(PlayerObject* p, PState& s, int idx, bool down) {
         int step = m_fields->step;
-        char const* tag = idx == 0 ? "P1" : "P2";
-
         if (!isFlyMode(p) && !s.waveQueue.empty()) {
             flushWaveQueue(p, s, idx);
         }
@@ -1784,10 +1635,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
         int n = modeLimitSteps(p);
         int style = styleFor(p);
         bool inGrace = step < m_fields->graceUntil;
-        if (isFlyMode(p) && inGrace && n > 0 && style != WAVE_HOLD) {
-            DBG("[InputBuffer] {} {} {} {} passed through (spawn grace) at step {}",
-                tag, modeName(p), WAVE_NAMES[style], down ? "PRESS" : "RELEASE", step);
-        }
 
         if (isFlyMode(p) && n > 0 && style != WAVE_HOLD && !inGrace) {
             int target;
@@ -1796,13 +1643,11 @@ class $modify(BufferLayer, GJBaseGameLayer) {
                 if (!s.waveQueue.empty()) {
                     auto const& last = s.waveQueue.back();
                     target = std::max(target, last.second);
-                    // A tap must hold for at least one grid cell, or the
-                    // press and release would cancel out in the same step.
                     if (!down && last.first) {
                         target = std::max(target, last.second + n);
                     }
                 }
-            } else { // WAVE_GAP
+            } else {
                 target = step;
                 if (!s.waveQueue.empty()) {
                     target = std::max(target, s.waveQueue.back().second);
@@ -1820,8 +1665,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
 
             s.held = down;
             s.waveQueue.emplace_back(down, target);
-            DBG("[InputBuffer] {} {} {} {} queued at step {} -> {} ({} steps)",
-                tag, modeName(p), WAVE_NAMES[style], down ? "PRESS" : "RELEASE", step, target, n);
             return true;
         }
 
@@ -1837,8 +1680,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
             if (minHold > 0 && heldFor < minHold) {
                 s.delayedRelease = true;
                 s.releaseAt = s.pressStep + minHold;
-                DBG("[InputBuffer] {} MIN-HOLD delaying release: held {} < {} steps [{}]",
-                    tag, heldFor, minHold, modeName(p));
                 return true;
             }
         }
@@ -1847,7 +1688,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
 
         if (down) {
             s.pressStep = isFlyMode(p) ? step : -1;
-
             bool early = isGroundMode(p) && !p->m_isOnGround && ringsTouching(p) == 0;
             if (early && modeLimitSteps(p) > 0) {
                 s.pending = true;
@@ -1872,7 +1712,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
             return;
         }
 
-        // Experimental dual support is off: plain game input in dual sections.
         if (sharedDualInput() && !g_dualEnabled) {
             bypassCleanup();
             return;
@@ -1887,24 +1726,16 @@ class $modify(BufferLayer, GJBaseGameLayer) {
         syncState();
 
         if (PlayLayer::get() && button == 1) {
-            // Outside two-player mode the game applies every input to player 1,
-            // even one that arrives flagged as player 2 (for example a Jump P2
-            // keybind). Treat those inputs as player 1 so the right icon is helped.
             bool asPlayer1 = isPlayer1 || !(m_levelSettings && m_levelSettings->m_twoPlayerMode);
 
-            // Dual portal in a one-player level: the game applies a single
-            // click to both icons.
             if (asPlayer1 && m_player1 && sharedDualInput()) {
                 if (!g_dualEnabled) {
-                    // Experimental dual support is off: plain game input.
                     bypassCleanup();
                     f->ps[0].held = down;
                     f->ps[1].held = down;
                     GJBaseGameLayer::handleButton(down, button, isPlayer1);
                     return;
                 }
-
-                // Each icon follows its own game mode and its own state.
                 bool hold1 = inputPlayer(m_player1, f->ps[0], 0, down);
                 bool hold2 = m_player2 ? inputPlayer(m_player2, f->ps[1], 1, down) : false;
                 if (hold1 && hold2) return;
@@ -1912,7 +1743,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
                     GJBaseGameLayer::handleButton(down, button, isPlayer1);
                     return;
                 }
-                // Only one icon is held back: give the click to the other now.
                 auto now = hold1 ? m_player2 : m_player1;
                 if (now) sendInput(now, down);
                 return;
@@ -1924,7 +1754,6 @@ class $modify(BufferLayer, GJBaseGameLayer) {
                 if (inputPlayer(p, f->ps[idx], idx, down)) return;
             }
         }
-
-        GJBaseGameLayer::handleButton(down, button, isPlayer1);
+        GJBaseGameLayer::handleInput(down, button, isPlayer1);
     }
 };
