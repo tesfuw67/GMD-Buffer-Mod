@@ -10,25 +10,34 @@ on:
 
 jobs:
   build:
-    # mod.json only lists Windows (gd.win), so Windows is the only target.
-    name: Windows
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Windows
+            os: windows-latest
+            target: Win64
+          - name: Android64
+            os: ubuntu-latest
+            target: Android64
+          - name: Android32
+            os: ubuntu-latest
+            target: Android32
+
+    name: ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
         with:
           combine: true
-          target: Win64
-          # The bindings repo's main branch is mid-update for a newer GD
-          # version and does not build against stable SDK 5.11.2. Pin it to
-          # the last commit before the 5.11.2 release, and build the matching
-          # Codegen from source. Remove both lines once Geode publishes the
-          # next stable release.
-          bindings-ref: 1605f500d053f8de122bf5c7dc6d17c24866e02e
-          configure-args: -DSKIP_BUILDING_CODEGEN=OFF
+          target: ${{ matrix.config.target }}
+          # Tetap pertahankan pin bindings khusus untuk Windows
+          bindings-ref: ${{ matrix.config.name == 'Windows' && '1605f500d053f8de122bf5c7dc6d17c24866e02e' || '' }}
+          configure-args: ${{ matrix.config.name == 'Windows' && '-DSKIP_BUILDING_CODEGEN=OFF' || '' }}
 
   package:
     name: Package build
@@ -41,14 +50,11 @@ jobs:
       - uses: geode-sdk/build-geode-mod/combine@main
         id: build
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: Build Output
           path: ${{ steps.build.outputs.build-output }}
 
-      # When a version tag (v1.0.2, ...) is pushed, attach the CI-built .geode
-      # to that tag's release, creating the release if needed. It never
-      # overwrites a file that is already on the release.
       - name: Attach build to release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
